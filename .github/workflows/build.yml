@@ -1,0 +1,65 @@
+name: Build and Release Executable
+
+on:
+  push:
+    branches:
+      - main  # main ブランチへの Push / Merge 時に自動実行
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set Release Version (Date + Run Number)
+        id: version
+        shell: powershell
+        run: |
+          $date = Get-Date -Format "yyyy.MM.dd"
+          $runNum = "${{ github.run_number }}"
+          $ver = "v${date}-${runNum}"
+          echo "VERSION=${ver}" >> $env:GITHUB_OUTPUT
+          echo "Generated Version: ${ver}"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Inject Version into Python Code
+        shell: powershell
+        run: |
+          $ver = "${{ steps.version.outputs.VERSION }}"
+          $pyPath = "app/main.py"
+          (Get-Content $pyPath) -replace 'APP_VERSION = "dev"', "APP_VERSION = `"$ver`"" | Set-Content $pyPath
+          Write-Host "Injected version: ${ver}"
+
+      - name: Build Executable
+        run: uv run python build.py
+
+      - name: Compress Output Directory
+        shell: powershell
+        run: |
+          Compress-Archive -Path dist/StockFetcher.exe -DestinationPath StockFetcher-Windows.zip
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.VERSION }}
+          name: Release ${{ steps.version.outputs.VERSION }}
+          files: StockFetcher-Windows.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
