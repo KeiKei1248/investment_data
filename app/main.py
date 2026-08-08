@@ -24,6 +24,8 @@ from app.updater import (
     update_master_tickers_in_background,
 )
 
+APP_VERSION = "dev"
+
 app = FastAPI(title="Stock Fetcher")
 
 # CORS設定 (開発時のフロントエンド分離やテストに対応)
@@ -313,7 +315,8 @@ async def get_index():
     index_path = os.path.join(templates_dir, "index.html")
     if os.path.exists(index_path):
         with open(index_path, "r", encoding="utf-8") as f:
-            return f.read()
+            content = f.read()
+            return content.replace("__VERSION__", APP_VERSION)
     return "<h3>templates/index.html is not found.</h3>"
 
 
