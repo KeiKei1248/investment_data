@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stock Fetcher - 長期投資向け銘柄情報自動取得ツール</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', 'Outfit', sans-serif;
+            background-color: #0b0f19; /* 超極暗 slate */
+            color: #f8fafc;
+        }
+        .glass-panel {
+            background: rgba(17, 24, 39, 0.7);
+            backdrop-filter: blur(16px);
+            border: 1px solid rgba(255, 255, 255, 0.04);
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+        }
+        .gradient-text {
+            background: linear-gradient(135deg, #a78bfa 0%, #6366f1 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        /* カスタムトグルやスクロールバー */
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: rgba(15, 23, 42, 0.3);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: rgba(99, 102, 241, 0.2);
+            border-radius: 9999px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(99, 102, 241, 0.4);
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col">
+    <!-- 背景の光彩エフェクト -->
+    <div class="absolute top-0 left-1/4 w-96 h-96 bg-indigo-900/10 rounded-full blur-[100px] pointer-events-none"></div>
+    <div class="absolute bottom-10 right-1/4 w-96 h-96 bg-violet-900/10 rounded-full blur-[100px] pointer-events-none"></div>
+
+    <!-- ヘッダー -->
+    <header class="w-full py-6 px-8 border-b border-slate-800/40 bg-slate-950/40 backdrop-blur-md z-10 flex items-center justify-between">
+        <div class="flex items-center gap-3">
+            <div class="p-2 bg-indigo-600/10 rounded-xl border border-indigo-500/20">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 12l3-3 3 3 4-4M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                </svg>
+            </div>
+            <div>
+                <h1 class="text-xl font-bold font-outfit tracking-wider gradient-text">Stock Fetcher</h1>
+                <p class="text-xs text-slate-400">長期投資向け財務データ自動取得ツール</p>
+            </div>
+        </div>
+        <div class="flex items-center gap-2">
+            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-800 text-slate-300 border border-slate-700/50">
+                Version 1.0.0
+            </span>
+        </div>
+    </header>
+
+    <!-- メインコンテンツ -->
+    <main class="flex-1 w-full max-w-7xl mx-auto px-6 py-8 grid grid-cols-1 lg:grid-cols-12 gap-8 z-10">
+        <!-- 左カラム: 銘柄選択 (5/12) -->
+        <section class="lg:col-span-5 flex flex-col h-[calc(100vh-180px)] min-h-[500px]">
+            <div class="glass-panel rounded-2xl p-6 flex flex-col h-full">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-lg font-semibold flex items-center gap-2">
+                        <span>📊</span> 対象銘柄の選択
+                    </h2>
+                    <span id="selected-count" class="text-xs font-semibold px-2.5 py-1 bg-indigo-500/10 text-indigo-400 rounded-full border border-indigo-500/20">
+                        選択中: 0 件
+                    </span>
+                </div>
+
+                <!-- 検索フィルター -->
+                <div class="relative mb-4">
+                    <span class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                        </svg>
+                    </span>
+                    <input type="text" id="search-input" placeholder="コード・企業名で検索..." 
+                        class="w-full pl-10 pr-4 py-2.5 bg-slate-950/80 border border-slate-800 rounded-xl text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition-colors">
+                </div>
+
+                <!-- 一括操作ボタン -->
+                <div class="flex gap-2 mb-4">
+                    <button id="btn-select-all" class="flex-1 py-1.5 px-3 bg-slate-800/50 hover:bg-slate-800 border border-slate-700/50 hover:border-slate-600 rounded-lg text-xs font-medium text-slate-300 transition-colors">
+                        すべて選択
+                    </button>
+                    <button id="btn-deselect-all" class="flex-1 py-1.5 px-3 bg-slate-800/50 hover:bg-slate-800 border border-slate-700/50 hover:border-slate-600 rounded-lg text-xs font-medium text-slate-300 transition-colors">
+                        選択クリア
+                    </button>
+                </div>
+
+                <!-- 銘柄チェックリスト -->
+                <div class="flex-1 overflow-y-auto pr-1 space-y-2" id="ticker-list">
+                    <div class="flex justify-center items-center h-32">
+                        <div class="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-indigo-500"></div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 右カラム: 出力設定 & 実行 (7/12) -->
+        <section class="lg:col-span-7 flex flex-col h-[calc(100vh-180px)] min-h-[500px] gap-6">
+            <!-- 上段: 出力項目の選択 -->
+            <div class="glass-panel rounded-2xl p-6 flex-1 flex flex-col overflow-hidden">
+                <h2 class="text-lg font-semibold flex items-center gap-2 mb-4">
+                    <span>⚙️</span> 出力項目の選択
+                </h2>
+                <div class="grid grid-cols-2 sm:grid-cols-3 gap-3 overflow-y-auto pr-1" id="field-list">
+                    <!-- Javascript から項目が挿入されます -->
+                </div>
+            </div>
+
+            <!-- 下段: 実行設定・ステータス -->
+            <div class="glass-panel rounded-2xl p-6 space-y-4">
+                <h2 class="text-lg font-semibold flex items-center gap-2">
+                    <span>💾</span> 出力設定 & 実行
+                </h2>
+
+                <!-- 保存先指定 -->
+                <div class="space-y-1.5">
+                    <label for="output-path" class="text-xs text-slate-400 font-medium">CSV保存先（ローカルパス）</label>
+                    <div class="relative">
+                        <input type="text" id="output-path" 
+                            class="w-full px-4 py-2.5 bg-slate-950/80 border border-slate-800 rounded-xl text-slate-300 focus:outline-none focus:border-indigo-500 transition-colors text-sm">
+                    </div>
+                    <p class="text-[11px] text-slate-500">※ Excelで文字化けせずに開けるよう、UTF-8 (BOM付き) 形式で保存されます。</p>
+                </div>
+
+                <!-- ステータス表示 (処理実行時) -->
+                <div id="status-panel" class="hidden p-4 rounded-xl bg-slate-950/60 border border-slate-800 space-y-3">
+                    <div class="flex justify-between items-center text-sm">
+                        <span id="status-message" class="text-slate-300 font-medium">準備中...</span>
+                        <span id="status-percent" class="text-indigo-400 font-bold font-outfit">0%</span>
+                    </div>
+                    <!-- 進捗バー -->
+                    <div class="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
+                        <div id="status-progress-bar" class="w-0 h-full bg-gradient-to-r from-indigo-500 to-violet-600 rounded-full transition-all duration-300"></div>
+                    </div>
+                </div>
+
+                <!-- ボタンアクション -->
+                <div class="flex flex-col sm:flex-row gap-3 pt-2">
+                    <!-- 実行ボタン -->
+                    <button id="btn-fetch" class="flex-1 py-3 px-6 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-semibold rounded-xl transition-all shadow-lg shadow-indigo-500/10 hover:shadow-indigo-500/20 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none flex items-center justify-center gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                        </svg>
+                        <span>CSVデータを出力・保存</span>
+                    </button>
+
+                    <!-- ダウンロードボタン (完了時にアクティブ化) -->
+                    <button id="btn-download" class="hidden py-3 px-6 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-semibold rounded-xl transition-all active:scale-[0.98] flex items-center justify-center gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        </svg>
+                        <span>CSVダウンロード</span>
+                    </button>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- フッター -->
+    <footer class="w-full py-4 px-8 text-center text-xs text-slate-600 border-t border-slate-900/50 bg-slate-950/20">
+        &copy; 2026 Stock Fetcher. Created with Google Antigravity.
+    </footer>
+
+    <!-- JS アセット -->
+    <script src="/static/app.js" defer></script>
+</body>
+</html>

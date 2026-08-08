@@ -1,0 +1,1 @@
+# Stock Fetcher application package
