@@ -1,11 +1,16 @@
 import os
+import sys
 import json
+import io
 import requests
+import urllib.parse
+from bs4 import BeautifulSoup
 import pandas as pd
 import asyncio
+import ctypes
 from typing import List, Dict
 
-JPX_URL = "https://www.jpx.co.jp/markets/statistics-metadata/market-categories/tvdivq0000001vg2-att/data_j.xls"
+JPX_PAGE_URL = "https://www.jpx.co.jp/markets/statistics-equities/misc/01.html"
 MASTER_FILE = "data/master_tickers.json"
 
 DEFAULT_TICKERS = [
@@ -23,33 +28,51 @@ DEFAULT_TICKERS = [
     {"ticker": "8058.T", "name": "三菱商事"}
 ]
 
+def hide_file(filepath: str):
+    """Windows環境でファイルを隠しファイル化する"""
+    if sys.platform.startswith("win"):
+        try:
+            # 2 は FILE_ATTRIBUTE_HIDDEN
+            ctypes.windll.kernel32.SetFileAttributesW(filepath, 2)
+        except Exception as e:
+            print(f"Failed to hide file {filepath}: {e}")
+
 def _fetch_jpx_tickers() -> List[Dict[str, str]]:
-    """JPXの公式サイトから上場銘柄一覧Excelをダウンロードして解析する"""
+    """JPXの公式サイトから上場銘柄一覧Excelの最新URLをスクレイピングしてダウンロード・解析する"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     }
-    # ダウンロード
-    resp = requests.get(JPX_URL, headers=headers, timeout=15)
+    
+    # 1. 統計ページを取得してExcelの直リンクを探索
+    page_resp = requests.get(JPX_PAGE_URL, headers=headers, timeout=15)
+    page_resp.raise_for_status()
+    
+    soup = BeautifulSoup(page_resp.text, 'html.parser')
+    excel_url = None
+    for a in soup.find_all('a', href=True):
+        href = a['href']
+        if 'data_j.xls' in href or 'data_j.xlsx' in href:
+            excel_url = urllib.parse.urljoin(JPX_PAGE_URL, href)
+            break
+            
+    if not excel_url:
+        raise ValueError("JPX Excel link not found on the page.")
+        
+    print(f"Downloading JPX Excel from dynamic URL: {excel_url}")
+    
+    # 2. ダウンロード
+    resp = requests.get(excel_url, headers=headers, timeout=15)
     resp.raise_for_status()
     
-    # メモリ上のExcelを読み込み
-    df = pd.read_excel(resp.content)
+    # 3. メモリ上のExcelを読み込み（xlrdを使用）
+    df = pd.read_excel(io.BytesIO(resp.content), engine="xlrd")
     
     # 列名のクリーニング
     df.columns = [str(c).strip() for c in df.columns]
     
-    code_col = None
-    name_col = None
-    for col in df.columns:
-        if "コード" in col:
-            code_col = col
-        elif "銘柄名" in col:
-            name_col = col
-            
-    if not code_col or not name_col:
-        # 見つからない場合はインデックスで推測
-        code_col = df.columns[1]
-        name_col = df.columns[2]
+    # インデックスで列を指定（1:コード, 2:銘柄名）
+    code_col = df.columns[1]
+    name_col = df.columns[2]
         
     tickers = []
     
@@ -66,8 +89,8 @@ def _fetch_jpx_tickers() -> List[Dict[str, str]]:
             continue
             
         code_str = str(code_val).strip()
-        # コードが4桁の数字であることを確認
-        if code_str.isdigit():
+        # コードが4桁の数字であることを確認 (ETFや普通株式などをすべて包含)
+        if code_str.isdigit() and len(code_str) == 4:
             ticker = f"{code_str}.T"
             tickers.append({"ticker": ticker, "name": str(name_val).strip()})
             
@@ -76,14 +99,18 @@ def _fetch_jpx_tickers() -> List[Dict[str, str]]:
 async def update_master_tickers() -> List[Dict[str, str]]:
     """起動時にマスター銘柄情報を非同期で更新する。失敗時はローカルキャッシュを使用する。"""
     os.makedirs("data", exist_ok=True)
+    # dataディレクトリ自体も隠しフォルダにする
+    hide_file("data")
+    
     try:
-        # asyncio.to_thread を用いてブロッキング処理を非同期化
         tickers = await asyncio.to_thread(_fetch_jpx_tickers)
         
         if tickers:
             with open(MASTER_FILE, "w", encoding="utf-8") as f:
                 json.dump(tickers, f, ensure_ascii=False, indent=2)
-            print("master_tickers.json has been updated successfully.")
+            # 作成したファイルを隠しファイル化
+            hide_file(MASTER_FILE)
+            print(f"master_tickers.json updated successfully with {len(tickers)} tickers.")
             return tickers
     except Exception as e:
         print(f"Failed to update master tickers from JPX: {e}. Using cached or default data.")
@@ -99,4 +126,5 @@ async def update_master_tickers() -> List[Dict[str, str]]:
     # キャッシュも読み込めない場合はデフォルト値を書き出して返す
     with open(MASTER_FILE, "w", encoding="utf-8") as f:
         json.dump(DEFAULT_TICKERS, f, ensure_ascii=False, indent=2)
+    hide_file(MASTER_FILE)
     return DEFAULT_TICKERS

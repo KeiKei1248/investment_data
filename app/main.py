@@ -4,6 +4,7 @@ import json
 import asyncio
 import threading
 import socket
+from datetime import datetime
 from contextlib import closing
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.staticfiles import StaticFiles
@@ -12,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
 import webview
-from app.updater import update_master_tickers
+from app.updater import update_master_tickers, hide_file
 from app.fetcher import fetch_and_save_csv
 
 app = FastAPI(title="Stock Fetcher")
@@ -26,11 +27,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# アセットのベースディレクトリを決定 (PyInstaller の一時ディレクトリに対応)
-if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+# 実行ファイルの位置（またはカレントディレクトリ）を特定する
+if getattr(sys, 'frozen', False):
+    EXE_DIR = os.path.dirname(sys.executable)
     BASE_DIR = sys._MEIPASS
 else:
-    # 開発環境 (app/main.py から見ると親ディレクトリがプロジェクトルート)
+    EXE_DIR = os.getcwd()
     BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 templates_dir = os.path.join(BASE_DIR, "app", "templates")
@@ -55,12 +57,13 @@ async def startup_event():
     global tickers_cache
     tickers_cache = await update_master_tickers()
 
-# ユーザー設定の定義 (これらは書き換え可能データなのでカレントディレクトリに配置)
-CONFIG_PATH = os.path.join(os.getcwd(), "data", "user_config.json")
+# ユーザー設定の定義 (書き換え可能データのため data ディレクトリに保存し、隠しファイル化)
+CONFIG_PATH = os.path.join(EXE_DIR, "data", "user_config.json")
 DEFAULT_CONFIG = {
     "selected_tickers": ["AAPL", "7203.T"],
     "selected_fields": ["date", "ticker", "company_name", "price", "per", "pbr", "dividend_yield", "equity_ratio"],
-    "output_path": os.path.join(os.getcwd(), "data", "output", "stock_data.csv")
+    "output_path": os.path.join(EXE_DIR, "stock_data.csv"),
+    "add_date_to_filename": False
 }
 
 def load_user_config() -> dict:
@@ -68,6 +71,7 @@ def load_user_config() -> dict:
         try:
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
                 cfg = json.load(f)
+                # 必須のキーが含まれているか確認
                 if "selected_tickers" in cfg and "selected_fields" in cfg and "output_path" in cfg:
                     return cfg
         except Exception:
@@ -77,8 +81,12 @@ def load_user_config() -> dict:
 def save_user_config(config: dict) -> bool:
     try:
         os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+        # 親フォルダ data も隠しフォルダ化
+        hide_file(os.path.dirname(CONFIG_PATH))
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
+        # 設定ファイル自体も隠しファイル化
+        hide_file(CONFIG_PATH)
         return True
     except Exception as e:
         print(f"Error saving config: {e}")
@@ -89,18 +97,20 @@ class ConfigModel(BaseModel):
     selected_tickers: list[str]
     selected_fields: list[str]
     output_path: str
+    add_date_to_filename: bool = False
 
 class FetchRequestModel(BaseModel):
     selected_tickers: list[str]
     selected_fields: list[str]
     output_path: str
+    add_date_to_filename: bool = False
 
 # API エンドポイント
 @app.get("/api/tickers")
 async def get_tickers():
     global tickers_cache
     if not tickers_cache:
-        master_json_path = os.path.join(os.getcwd(), "data", "master_tickers.json")
+        master_json_path = os.path.join(EXE_DIR, "data", "master_tickers.json")
         if os.path.exists(master_json_path):
             with open(master_json_path, "r", encoding="utf-8") as f:
                 tickers_cache = json.load(f)
@@ -120,7 +130,7 @@ async def save_config_endpoint(config: ConfigModel):
         raise HTTPException(status_code=500, detail="設定の保存に失敗しました。")
     return {"status": "success"}
 
-def run_fetch_task(tickers: list[str], fields: list[str], output_path: str):
+def run_fetch_task(tickers: list[str], fields: list[str], output_path: str, add_date: bool):
     global progress_state
     progress_state.status = "running"
     progress_state.total = len(tickers)
@@ -143,6 +153,14 @@ def run_fetch_task(tickers: list[str], fields: list[str], output_path: str):
         asyncio.set_event_loop(loop)
         abs_output_path = os.path.abspath(output_path)
         
+        # ファイル名に日付を付与するオプションの適用
+        if add_date:
+            dir_name = os.path.dirname(abs_output_path)
+            base_name = os.path.basename(abs_output_path)
+            name, ext = os.path.splitext(base_name)
+            date_str = datetime.now().strftime("%Y%m%d")
+            abs_output_path = os.path.join(dir_name, f"{name}_{date_str}{ext}")
+            
         loop.run_until_complete(
             fetch_and_save_csv(tickers, fields, company_name_map, abs_output_path, progress_cb)
         )
@@ -162,7 +180,13 @@ async def start_fetch(request: FetchRequestModel, background_tasks: BackgroundTa
     # 最新のパラメータ設定を保存
     save_user_config(request.dict())
     
-    background_tasks.add_task(run_fetch_task, request.selected_tickers, request.selected_fields, request.output_path)
+    background_tasks.add_task(
+        run_fetch_task, 
+        request.selected_tickers, 
+        request.selected_fields, 
+        request.output_path,
+        request.add_date_to_filename
+    )
     return {"status": "started"}
 
 @app.get("/api/progress")

@@ -24,6 +24,7 @@ const tickerListContainer = document.getElementById("ticker-list");
 const fieldListContainer = document.getElementById("field-list");
 const searchInput = document.getElementById("search-input");
 const outputPathInput = document.getElementById("output-path");
+const addDateCheckbox = document.getElementById("add-date-to-filename");
 const selectedCountBadge = document.getElementById("selected-count");
 const btnSelectAll = document.getElementById("btn-select-all");
 const btnDeselectAll = document.getElementById("btn-deselect-all");
@@ -67,6 +68,10 @@ async function loadInitialData() {
         selectedFields = new Set(config.selected_fields || []);
         outputPath = config.output_path || "";
         outputPathInput.value = outputPath;
+        
+        if (addDateCheckbox) {
+            addDateCheckbox.checked = config.add_date_to_filename || false;
+        }
 
         // 銘柄マスターの取得
         const tickersResponse = await fetch("/api/tickers");
@@ -124,7 +129,8 @@ async function saveConfig() {
     const data = {
         selected_tickers: Array.from(selectedTickers),
         selected_fields: Array.from(selectedFields),
-        output_path: outputPathInput.value.trim()
+        output_path: outputPathInput.value.trim(),
+        add_date_to_filename: addDateCheckbox ? addDateCheckbox.checked : false
     };
     try {
         await fetch("/api/config/save", {
@@ -198,10 +204,16 @@ function setupEventListeners() {
     outputPathInput.addEventListener("change", () => {
         saveConfig();
     });
+    
+    // 日付付与チェックボックス変更時
+    if (addDateCheckbox) {
+        addDateCheckbox.addEventListener("change", () => {
+            saveConfig();
+        });
+    }
 
     // すべて選択ボタン
     btnSelectAll.addEventListener("click", () => {
-        // 現在フィルタされて表示されている銘柄すべてを選択
         const checkboxes = tickerListContainer.querySelectorAll(".ticker-checkbox");
         checkboxes.forEach(cb => {
             cb.checked = true;
@@ -272,7 +284,8 @@ async function startDataFetch() {
             body: JSON.stringify({
                 selected_tickers: Array.from(selectedTickers),
                 selected_fields: Array.from(selectedFields),
-                output_path: path
+                output_path: path,
+                add_date_to_filename: addDateCheckbox ? addDateCheckbox.checked : false
             })
         });
 
@@ -298,6 +311,7 @@ function setControlsEnabled(enabled) {
     btnDeselectAll.disabled = !enabled;
     searchInput.disabled = !enabled;
     outputPathInput.disabled = !enabled;
+    if (addDateCheckbox) addDateCheckbox.disabled = !enabled;
     
     document.querySelectorAll(".ticker-checkbox").forEach(cb => cb.disabled = !enabled);
     document.querySelectorAll(".field-checkbox").forEach(cb => cb.disabled = !enabled);
