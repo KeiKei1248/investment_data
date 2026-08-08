@@ -13,8 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
 import webview
-from app.updater import update_master_tickers, hide_file
-from app.fetcher import fetch_and_save_csv
+from app.updater import load_cached_tickers, update_master_tickers_in_background, hide_file, update_status
 
 app = FastAPI(title="Stock Fetcher")
 
@@ -49,18 +48,17 @@ class FetchStatus:
 
 progress_state = FetchStatus()
 
-# 起動時のマスター銘柄更新
-tickers_cache = []
-
 @app.on_event("startup")
 async def startup_event():
-    global tickers_cache
-    tickers_cache = await update_master_tickers()
+    # 起動時はディレクトリの準備のみ行う（起動超高速化）
+    os.makedirs("data", exist_ok=True)
+    hide_file("data")
 
 # ユーザー設定の定義 (書き換え可能データのため data ディレクトリに保存し、隠しファイル化)
 CONFIG_PATH = os.path.join(EXE_DIR, "data", "user_config.json")
 DEFAULT_CONFIG = {
-    "selected_tickers": ["AAPL", "7203.T"],
+    "selected_segment": "プライム（内国株式）",
+    "selected_tickers": ["7203.T"],
     "selected_fields": ["date", "ticker", "company_name", "price", "per", "pbr", "dividend_yield", "equity_ratio"],
     "output_path": os.path.join(EXE_DIR, "stock_data.csv"),
     "add_date_to_filename": False
@@ -73,6 +71,9 @@ def load_user_config() -> dict:
                 cfg = json.load(f)
                 # 必須のキーが含まれているか確認
                 if "selected_tickers" in cfg and "selected_fields" in cfg and "output_path" in cfg:
+                    # 移行対応 (selected_segmentが無い、または古いselected_marketがある場合)
+                    if "selected_segment" not in cfg:
+                        cfg["selected_segment"] = "プライム（内国株式）"
                     return cfg
         except Exception:
             pass
@@ -81,11 +82,9 @@ def load_user_config() -> dict:
 def save_user_config(config: dict) -> bool:
     try:
         os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
-        # 親フォルダ data も隠しフォルダ化
         hide_file(os.path.dirname(CONFIG_PATH))
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
-        # 設定ファイル自体も隠しファイル化
         hide_file(CONFIG_PATH)
         return True
     except Exception as e:
@@ -94,12 +93,14 @@ def save_user_config(config: dict) -> bool:
 
 # Pydantic モデル
 class ConfigModel(BaseModel):
+    selected_segment: str = ""
     selected_tickers: list[str]
     selected_fields: list[str]
     output_path: str
     add_date_to_filename: bool = False
 
 class FetchRequestModel(BaseModel):
+    selected_segment: str = ""
     selected_tickers: list[str]
     selected_fields: list[str]
     output_path: str
@@ -107,17 +108,20 @@ class FetchRequestModel(BaseModel):
 
 # API エンドポイント
 @app.get("/api/tickers")
-async def get_tickers():
-    global tickers_cache
-    if not tickers_cache:
-        master_json_path = os.path.join(EXE_DIR, "data", "master_tickers.json")
-        if os.path.exists(master_json_path):
-            with open(master_json_path, "r", encoding="utf-8") as f:
-                tickers_cache = json.load(f)
-        else:
-            from app.updater import DEFAULT_TICKERS
-            tickers_cache = DEFAULT_TICKERS
-    return tickers_cache
+async def get_tickers(background_tasks: BackgroundTasks = None):
+    # 1. ローカルキャッシュ（高速）を即座に読み込み
+    tickers = load_cached_tickers()
+    
+    # 2. バックグラウンドタスクで最新のデータをスクレイピング・更新開始
+    if background_tasks:
+        background_tasks.add_task(update_master_tickers_in_background)
+        
+    return tickers
+
+@app.get("/api/tickers/status")
+async def get_tickers_status():
+    # 同期ステータスを返す
+    return {"status": update_status}
 
 @app.get("/api/config")
 async def get_config():
@@ -138,10 +142,9 @@ def run_fetch_task(tickers: list[str], fields: list[str], output_path: str, add_
     progress_state.message = "データ取得を開始します..."
     progress_state.output_file = ""
     
-    # 銘柄名マップを作成
-    company_name_map = {}
-    for item in tickers_cache:
-        company_name_map[item["ticker"]] = item["name"]
+    # 日本株のキャッシュから銘柄名マップを作成
+    cached_tickers = load_cached_tickers()
+    company_name_map = {item["ticker"]: item["name"] for item in cached_tickers}
         
     def progress_cb(current: int, total: int, msg: str):
         progress_state.current = current
@@ -161,6 +164,7 @@ def run_fetch_task(tickers: list[str], fields: list[str], output_path: str, add_
             date_str = datetime.now().strftime("%Y%m%d")
             abs_output_path = os.path.join(dir_name, f"{name}_{date_str}{ext}")
             
+        from app.fetcher import fetch_and_save_csv
         loop.run_until_complete(
             fetch_and_save_csv(tickers, fields, company_name_map, abs_output_path, progress_cb)
         )
@@ -239,10 +243,10 @@ if __name__ == "__main__":
     
     # pywebview 起動
     webview.create_window(
-        "Stock Fetcher - 長期投資銘柄情報自動取得ツール",
+        "Stock Fetcher - 長期投資銘柄情報自動取得ツール (日本株専用)",
         f"http://127.0.0.1:{port}",
-        width=1100,
-        height=800,
-        min_size=(900, 650)
+        width=1150,
+        height=850,
+        min_size=(950, 700)
     )
     webview.start()

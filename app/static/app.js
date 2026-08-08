@@ -16,8 +16,10 @@ const FIELD_DEFINITIONS = [
 let masterTickers = [];
 let selectedTickers = new Set();
 let selectedFields = new Set();
+let selectedSegment = "";
 let outputPath = "";
 let pollingInterval = null;
+let masterSyncInterval = null;
 
 // DOM要素の取得
 const tickerListContainer = document.getElementById("ticker-list");
@@ -34,13 +36,62 @@ const statusPanel = document.getElementById("status-panel");
 const statusMessage = document.getElementById("status-message");
 const statusPercent = document.getElementById("status-percent");
 const statusProgressBar = document.getElementById("status-progress-bar");
+const masterSyncIndicator = document.getElementById("master-sync-indicator");
+
+// ステップ1の商品区分セレクトボックス
+const selectSegment = document.getElementById("select-segment");
+const btnSegmentNext = document.getElementById("btn-segment-next");
+
+// 各種ナビゲーションボタン
+const btnToStep1 = document.getElementById("btn-to-step-1");
+const btnToStep2 = document.getElementById("btn-to-step-2");
+const btnToStep3 = document.getElementById("btn-to-step-3");
 
 // 起動時の初期化処理
 document.addEventListener("DOMContentLoaded", async () => {
     initFieldList();
     await loadInitialData();
     setupEventListeners();
+    goToStep(1); // 起動時はステップ1を表示
+    
+    // バックグラウンド同期ステータスの確認を開始
+    checkMasterSyncStatus();
 });
+
+// 段階的ステップ制御
+function goToStep(step) {
+    // 全パネルを非表示にする
+    document.querySelectorAll(".step-panel").forEach(p => p.classList.add("hidden"));
+    
+    // 指定パネルを表示
+    document.getElementById(`panel-step-${step}`).classList.remove("hidden");
+    
+    // インジケーターを更新
+    updateStepIndicators(step);
+}
+
+function updateStepIndicators(activeStep) {
+    for (let i = 1; i <= 3; i++) {
+        const ind = document.getElementById(`step-indicator-${i}`);
+        const span = ind.querySelector("span");
+        if (i === activeStep) {
+            ind.className = "flex items-center gap-2 text-indigo-400 font-bold transition-all";
+            span.className = "w-7 h-7 rounded-full bg-indigo-600/20 border border-indigo-500 flex items-center justify-center text-xs";
+        } else if (i < activeStep) {
+            ind.className = "flex items-center gap-2 text-emerald-400 font-medium transition-all";
+            span.className = "w-7 h-7 rounded-full bg-emerald-600/10 border border-emerald-500/30 flex items-center justify-center text-xs";
+            span.innerHTML = `
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-4.5 w-4.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                </svg>
+            `;
+        } else {
+            ind.className = "flex items-center gap-2 text-slate-500 transition-all font-medium";
+            span.className = "w-7 h-7 rounded-full bg-slate-950 border border-slate-850 flex items-center justify-center text-xs";
+            span.innerHTML = `${i}`;
+        }
+    }
+}
 
 // 出力項目リストの初期描画
 function initFieldList() {
@@ -57,13 +108,13 @@ function initFieldList() {
     });
 }
 
-// データの初期読み込み
+// データの初期読み込み (起動時)
 async function loadInitialData() {
     try {
-        // 設定情報の取得
         const configResponse = await fetch("/api/config");
         const config = await configResponse.json();
         
+        selectedSegment = config.selected_segment || "プライム（内国株式）";
         selectedTickers = new Set(config.selected_tickers || []);
         selectedFields = new Set(config.selected_fields || []);
         outputPath = config.output_path || "";
@@ -73,33 +124,130 @@ async function loadInitialData() {
             addDateCheckbox.checked = config.add_date_to_filename || false;
         }
 
-        // 銘柄マスターの取得
-        const tickersResponse = await fetch("/api/tickers");
-        masterTickers = await tickersResponse.json();
-
-        // 描画
-        renderTickerList();
         updateFieldCheckboxes();
         updateSelectedCount();
+
+        // 銘柄マスターのロード (即座にキャッシュが返る)
+        await loadTickersMasterOnly();
     } catch (error) {
-        console.error("データの初期化に失敗しました:", error);
+        console.error("設定データの初期化に失敗しました:", error);
     }
 }
 
-// 銘柄リストの描画
+// 銘柄マスターのみをロード
+async function loadTickersMasterOnly() {
+    try {
+        const response = await fetch("/api/tickers");
+        masterTickers = await response.json();
+        
+        // 商品区分のドロップダウンを生成
+        renderSegmentDropdown();
+    } catch (e) {
+        console.error("銘柄マスターのロードに失敗しました:", e);
+    }
+}
+
+// 商品区分のドロップダウンを構築
+function renderSegmentDropdown() {
+    // ユニークな商品区分を抽出
+    const segments = Array.from(new Set(masterTickers.map(item => item.segment))).filter(Boolean);
+    
+    selectSegment.innerHTML = "";
+    if (segments.length === 0) {
+        selectSegment.innerHTML = `<option value="">商品区分がありません</option>`;
+        return;
+    }
+    
+    segments.forEach(seg => {
+        const option = document.createElement("option");
+        option.value = seg;
+        option.textContent = seg;
+        if (seg === selectedSegment) {
+            option.selected = true;
+        }
+        selectSegment.appendChild(option);
+    });
+}
+
+// バックグラウンド同期ステータスの確認・ポーリング
+function checkMasterSyncStatus() {
+    if (masterSyncInterval) clearInterval(masterSyncInterval);
+    
+    fetchSyncStatus();
+    
+    masterSyncInterval = setInterval(() => {
+        fetchSyncStatus();
+    }, 2000);
+}
+
+async function fetchSyncStatus() {
+    try {
+        const resp = await fetch("/api/tickers/status");
+        const data = await resp.json();
+        
+        if (data.status === "updating") {
+            masterSyncIndicator.classList.remove("hidden");
+        } else {
+            clearInterval(masterSyncInterval);
+            masterSyncIndicator.classList.add("hidden");
+            
+            if (data.status === "completed") {
+                // 最新データを再ロードして反映
+                const response = await fetch("/api/tickers");
+                const updatedTickers = await response.json();
+                
+                if (updatedTickers.length !== masterTickers.length) {
+                    masterTickers = updatedTickers;
+                    renderSegmentDropdown(); // ドロップダウン再構築
+                    if (document.getElementById("panel-step-3").classList.contains("hidden") === false) {
+                        renderTickerList(searchInput.value);
+                    }
+                    console.log("Master tickers dynamic refresh complete");
+                }
+            }
+        }
+    } catch (e) {
+        console.error("同期ステータスチェックエラー:", e);
+        clearInterval(masterSyncInterval);
+        masterSyncIndicator.classList.add("hidden");
+    }
+}
+
+// 表記揺れ（ひらがな・カタカナ、全角・半角英数字、大文字・小文字）を統一する正規化関数
+function normalizeString(str) {
+    if (!str) return "";
+    
+    let normalized = str.replace(/[！-～]/g, function(s) {
+        return String.fromCharCode(s.charCodeAt(0) - 0xfee0);
+    });
+    
+    normalized = normalized.replace(/[\u3041-\u3096]/g, function(s) {
+        return String.fromCharCode(s.charCodeAt(0) + 0x60);
+    });
+    
+    return normalized.toLowerCase().trim();
+}
+
+// 銘柄リストの描画（選択された商品区分のみ、かつインクリメンタル検索適用）
 function renderTickerList(filterText = "") {
     tickerListContainer.innerHTML = "";
-    const filter = filterText.toLowerCase().trim();
     
-    const filtered = masterTickers.filter(item => {
-        return item.ticker.toLowerCase().includes(filter) || 
-               item.name.toLowerCase().includes(filter);
+    const filterNorm = normalizeString(filterText);
+    
+    // 現在選択されている商品区分 (segment) で一次フィルタ
+    const filteredBySegment = masterTickers.filter(item => item.segment === selectedSegment);
+    
+    // さらに検索語でフィルタ
+    const filtered = filteredBySegment.filter(item => {
+        const tickerNorm = normalizeString(item.ticker);
+        const nameNorm = normalizeString(item.name);
+        return tickerNorm.includes(filterNorm) || nameNorm.includes(filterNorm);
     });
 
     if (filtered.length === 0) {
         tickerListContainer.innerHTML = `
             <div class="text-center py-8 text-sm text-slate-500">
-                該当する銘柄が見つかりません。
+                選択された区分「${selectedSegment}」には銘柄が見つかりません。
             </div>
         `;
         return;
@@ -127,6 +275,7 @@ function renderTickerList(filterText = "") {
 // 設定変更時の自動保存処理
 async function saveConfig() {
     const data = {
+        selected_segment: selectedSegment,
         selected_tickers: Array.from(selectedTickers),
         selected_fields: Array.from(selectedFields),
         output_path: outputPathInput.value.trim(),
@@ -159,7 +308,35 @@ function updateSelectedCount() {
 
 // イベントリスナーのセットアップ
 function setupEventListeners() {
-    // リアルタイム企業検索
+    // ステップ1: 商品区分ドロップダウン
+    selectSegment.addEventListener("change", (e) => {
+        selectedSegment = e.target.value;
+        saveConfig();
+    });
+
+    btnSegmentNext.addEventListener("click", () => {
+        if (!selectedSegment) {
+            alert("商品区分を選択してください。");
+            return;
+        }
+        goToStep(2);
+    });
+
+    // ステップ ナビゲーション
+    btnToStep1.addEventListener("click", () => goToStep(1));
+    btnToStep2.addEventListener("click", () => goToStep(2));
+    
+    btnToStep3.addEventListener("click", () => {
+        if (selectedFields.size === 0) {
+            alert("出力項目を最低1つ以上選択してください。");
+            return;
+        }
+        // 選択された商品区分に該当する銘柄リストを描画
+        renderTickerList();
+        goToStep(3);
+    });
+
+    // リアルタイム企業検索（インクリメンタル検索）
     searchInput.addEventListener("input", (e) => {
         renderTickerList(e.target.value);
     });
@@ -212,7 +389,7 @@ function setupEventListeners() {
         });
     }
 
-    // すべて選択ボタン
+    // すべて選択ボタン (現在表示されているフィルタ対象に適用)
     btnSelectAll.addEventListener("click", () => {
         const checkboxes = tickerListContainer.querySelectorAll(".ticker-checkbox");
         checkboxes.forEach(cb => {
@@ -228,7 +405,7 @@ function setupEventListeners() {
         saveConfig();
     });
 
-    // 選択クリアボタン
+    // 選択クリアボタン (現在表示されているフィルタ対象に適用)
     btnDeselectAll.addEventListener("click", () => {
         const checkboxes = tickerListContainer.querySelectorAll(".ticker-checkbox");
         checkboxes.forEach(cb => {
@@ -282,6 +459,7 @@ async function startDataFetch() {
                 "Content-Type": "application/json"
             },
             body: JSON.stringify({
+                selected_segment: selectedSegment,
                 selected_tickers: Array.from(selectedTickers),
                 selected_fields: Array.from(selectedFields),
                 output_path: path,
@@ -311,6 +489,7 @@ function setControlsEnabled(enabled) {
     btnDeselectAll.disabled = !enabled;
     searchInput.disabled = !enabled;
     outputPathInput.disabled = !enabled;
+    btnToStep2.disabled = !enabled;
     if (addDateCheckbox) addDateCheckbox.disabled = !enabled;
     
     document.querySelectorAll(".ticker-checkbox").forEach(cb => cb.disabled = !enabled);
