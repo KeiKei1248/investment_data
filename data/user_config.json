@@ -1,0 +1,18 @@
+{
+  "master_last_updated": "2026-08-09",
+  "selected_category": "プライム（内国株式）",
+  "selected_tickers": [
+    "7203.T"
+  ],
+  "selected_fields": [
+    "date",
+    "ticker",
+    "company_name",
+    "price",
+    "per",
+    "pbr",
+    "dividend_yield",
+    "equity_ratio"
+  ],
+  "output_path": "stock_data.csv"
+}

@@ -16,7 +16,7 @@ const FIELD_DEFINITIONS = [
 let masterTickers = [];
 let selectedTickers = new Set();
 let selectedFields = new Set();
-let selectedSegment = "";
+let selectedCategory = "";
 let outputPath = "";
 let pollingInterval = null;
 let masterSyncInterval = null;
@@ -31,7 +31,6 @@ const selectedCountBadge = document.getElementById("selected-count");
 const btnSelectAll = document.getElementById("btn-select-all");
 const btnDeselectAll = document.getElementById("btn-deselect-all");
 const btnFetch = document.getElementById("btn-fetch");
-const btnDownload = document.getElementById("btn-download");
 const statusPanel = document.getElementById("status-panel");
 const statusMessage = document.getElementById("status-message");
 const statusPercent = document.getElementById("status-percent");
@@ -114,7 +113,7 @@ async function loadInitialData() {
         const configResponse = await fetch("/api/config");
         const config = await configResponse.json();
         
-        selectedSegment = config.selected_segment || "プライム（内国株式）";
+        selectedCategory = config.selected_category || "プライム（内国株式）";
         selectedTickers = new Set(config.selected_tickers || []);
         selectedFields = new Set(config.selected_fields || []);
         outputPath = config.output_path || "";
@@ -138,7 +137,8 @@ async function loadInitialData() {
 async function loadTickersMasterOnly() {
     try {
         const response = await fetch("/api/tickers");
-        masterTickers = await response.json();
+        const data = await response.json();
+        masterTickers = data.japan || [];
         
         // 商品区分のドロップダウンを生成
         renderSegmentDropdown();
@@ -150,19 +150,19 @@ async function loadTickersMasterOnly() {
 // 商品区分のドロップダウンを構築
 function renderSegmentDropdown() {
     // ユニークな商品区分を抽出
-    const segments = Array.from(new Set(masterTickers.map(item => item.segment))).filter(Boolean);
+    const categories = Array.from(new Set(masterTickers.map(item => item.category))).filter(Boolean);
     
     selectSegment.innerHTML = "";
-    if (segments.length === 0) {
+    if (categories.length === 0) {
         selectSegment.innerHTML = `<option value="">商品区分がありません</option>`;
         return;
     }
     
-    segments.forEach(seg => {
+    categories.forEach(cat => {
         const option = document.createElement("option");
-        option.value = seg;
-        option.textContent = seg;
-        if (seg === selectedSegment) {
+        option.value = cat;
+        option.textContent = cat;
+        if (cat === selectedCategory) {
             option.selected = true;
         }
         selectSegment.appendChild(option);
@@ -194,7 +194,8 @@ async function fetchSyncStatus() {
             if (data.status === "completed") {
                 // 最新データを再ロードして反映
                 const response = await fetch("/api/tickers");
-                const updatedTickers = await response.json();
+                const updatedData = await response.json();
+                const updatedTickers = updatedData.japan || [];
                 
                 if (updatedTickers.length !== masterTickers.length) {
                     masterTickers = updatedTickers;
@@ -234,11 +235,11 @@ function renderTickerList(filterText = "") {
     
     const filterNorm = normalizeString(filterText);
     
-    // 現在選択されている商品区分 (segment) で一次フィルタ
-    const filteredBySegment = masterTickers.filter(item => item.segment === selectedSegment);
+    // 現在選択されている商品区分 (category) で一次フィルタ
+    const filteredByCategory = masterTickers.filter(item => item.category === selectedCategory);
     
     // さらに検索語でフィルタ
-    const filtered = filteredBySegment.filter(item => {
+    const filtered = filteredByCategory.filter(item => {
         const tickerNorm = normalizeString(item.ticker);
         const nameNorm = normalizeString(item.name);
         return tickerNorm.includes(filterNorm) || nameNorm.includes(filterNorm);
@@ -247,7 +248,7 @@ function renderTickerList(filterText = "") {
     if (filtered.length === 0) {
         tickerListContainer.innerHTML = `
             <div class="text-center py-8 text-sm text-slate-500">
-                選択された区分「${selectedSegment}」には銘柄が見つかりません。
+                選択された区分「${selectedCategory}」には銘柄が見つかりません。
             </div>
         `;
         return;
@@ -275,7 +276,7 @@ function renderTickerList(filterText = "") {
 // 設定変更時の自動保存処理
 async function saveConfig() {
     const data = {
-        selected_segment: selectedSegment,
+        selected_category: selectedCategory,
         selected_tickers: Array.from(selectedTickers),
         selected_fields: Array.from(selectedFields),
         output_path: outputPathInput.value.trim(),
@@ -310,17 +311,38 @@ function updateSelectedCount() {
 function setupEventListeners() {
     // ステップ1: 商品区分ドロップダウン
     selectSegment.addEventListener("change", (e) => {
-        selectedSegment = e.target.value;
+        selectedCategory = e.target.value;
         saveConfig();
     });
 
     btnSegmentNext.addEventListener("click", () => {
-        if (!selectedSegment) {
+        if (!selectedCategory) {
             alert("商品区分を選択してください。");
             return;
         }
         goToStep(2);
     });
+    
+    // マスタ手動更新ボタン
+    const btnSyncMaster = document.getElementById("btn-sync-master");
+    if (btnSyncMaster) {
+        btnSyncMaster.addEventListener("click", async () => {
+            btnSyncMaster.disabled = true;
+            try {
+                const resp = await fetch("/api/tickers/update", { method: "POST" });
+                if (resp.ok) {
+                    checkMasterSyncStatus();
+                } else {
+                    alert("銘柄マスターの更新要求に失敗しました。");
+                }
+            } catch (e) {
+                console.error("手動更新エラー:", e);
+                alert("エラーが発生しました。");
+            } finally {
+                btnSyncMaster.disabled = false;
+            }
+        });
+    }
 
     // ステップ ナビゲーション
     btnToStep1.addEventListener("click", () => goToStep(1));
@@ -424,10 +446,6 @@ function setupEventListeners() {
     // 実行ボタン
     btnFetch.addEventListener("click", startDataFetch);
 
-    // ダウンロードボタン
-    btnDownload.addEventListener("click", () => {
-        window.location.href = "/api/download";
-    });
 }
 
 // データの取得処理開始
@@ -448,7 +466,6 @@ async function startDataFetch() {
 
     // UIを処理中状態に変更
     setControlsEnabled(false);
-    btnDownload.classList.add("hidden");
     statusPanel.classList.remove("hidden");
     updateProgressUI(0, 100, "処理を開始しています...", "running");
 
@@ -459,7 +476,7 @@ async function startDataFetch() {
                 "Content-Type": "application/json"
             },
             body: JSON.stringify({
-                selected_segment: selectedSegment,
+                selected_category: selectedCategory,
                 selected_tickers: Array.from(selectedTickers),
                 selected_fields: Array.from(selectedFields),
                 output_path: path,
@@ -510,7 +527,6 @@ function startProgressPolling() {
             if (data.status === "completed") {
                 clearInterval(pollingInterval);
                 setControlsEnabled(true);
-                btnDownload.classList.remove("hidden");
             } else if (data.status === "error") {
                 clearInterval(pollingInterval);
                 setControlsEnabled(true);
@@ -523,7 +539,11 @@ function startProgressPolling() {
 
 // 進捗UIの更新
 function updateProgressUI(current, total, message, status) {
-    statusMessage.textContent = message;
+    if (status === "completed") {
+        statusMessage.textContent = "指定されたパスへ保存が完了しました。";
+    } else {
+        statusMessage.textContent = message;
+    }
     
     let percent = 0;
     if (total > 0) {
@@ -545,3 +565,4 @@ function updateProgressUI(current, total, message, status) {
         statusProgressBar.className = "w-full h-full bg-gradient-to-r from-indigo-500 to-violet-600 rounded-full transition-all duration-300";
     }
 }
+

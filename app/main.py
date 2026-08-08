@@ -11,15 +11,17 @@ import uvicorn
 import webview
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app.updater import (
+    MASTER_FILE,
+    get_update_status,
     hide_file,
     load_cached_tickers,
+    show_file,
     update_master_tickers_in_background,
-    update_status,
 )
 
 app = FastAPI(title="Stock Fetcher")
@@ -68,7 +70,7 @@ async def startup_event():
 # ユーザー設定の定義 (書き換え可能データのため data ディレクトリに保存し、隠しファイル化)
 CONFIG_PATH = os.path.join(EXE_DIR, "data", "user_config.json")
 DEFAULT_CONFIG = {
-    "selected_segment": "プライム（内国株式）",
+    "selected_category": "プライム（内国株式）",
     "selected_tickers": ["7203.T"],
     "selected_fields": [
         "date",
@@ -82,6 +84,7 @@ DEFAULT_CONFIG = {
     ],
     "output_path": os.path.join(EXE_DIR, "stock_data.csv"),
     "add_date_to_filename": False,
+    "master_last_updated": "",
 }
 
 
@@ -96,9 +99,26 @@ def load_user_config() -> dict:
                     and "selected_fields" in cfg
                     and "output_path" in cfg
                 ):
-                    # 移行対応 (selected_segmentが無い、または古いselected_marketがある場合)
-                    if "selected_segment" not in cfg:
-                        cfg["selected_segment"] = "プライム（内国株式）"
+                    # 移行対応 (selected_categoryが無い、または古いselected_segmentがある場合)
+                    if "selected_category" not in cfg:
+                        if "selected_segment" in cfg:
+                            cfg["selected_category"] = cfg.pop("selected_segment")
+                        else:
+                            cfg["selected_category"] = "プライム（内国株式）"
+                    if "master_last_updated" not in cfg:
+                        cfg["master_last_updated"] = ""
+
+                    # 移行対応: 出力先が「株式情報」フォルダを含む古いデフォルトの場合、EXE_DIR直下に戻す
+                    old_folder_path = os.path.join(
+                        EXE_DIR, "株式情報", "stock_data.csv"
+                    )
+                    if (
+                        os.path.abspath(cfg["output_path"])
+                        == os.path.abspath(old_folder_path)
+                        or cfg["output_path"] == "株式情報/stock_data.csv"
+                    ):
+                        cfg["output_path"] = os.path.join(EXE_DIR, "stock_data.csv")
+
                     return cfg
         except Exception:
             pass
@@ -109,6 +129,7 @@ def save_user_config(config: dict) -> bool:
     try:
         os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
         hide_file(os.path.dirname(CONFIG_PATH))
+        show_file(CONFIG_PATH)
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
         hide_file(CONFIG_PATH)
@@ -120,18 +141,18 @@ def save_user_config(config: dict) -> bool:
 
 # Pydantic モデル
 class ConfigModel(BaseModel):
-    selected_segment: str = ""
+    selected_category: str = ""
     selected_tickers: list[str]
     selected_fields: list[str]
     output_path: str
     add_date_to_filename: bool = False
+    master_last_updated: str = ""
 
 
 class FetchRequestModel(BaseModel):
-    selected_segment: str = ""
+    selected_category: str = ""
     selected_tickers: list[str]
     selected_fields: list[str]
-
     output_path: str
     add_date_to_filename: bool = False
 
@@ -142,17 +163,55 @@ async def get_tickers(background_tasks: BackgroundTasks = None):
     # 1. ローカルキャッシュ（高速）を即座に読み込み
     tickers = load_cached_tickers()
 
-    # 2. バックグラウンドタスクで最新のデータをスクレイピング・更新開始
-    if background_tasks:
-        background_tasks.add_task(update_master_tickers_in_background)
+    # 30日以上経過しているかどうかのチェック
+    config = load_user_config()
+    last_updated_str = config.get("master_last_updated", "")
+
+    should_update = False
+    if not last_updated_str:
+        should_update = True
+    else:
+        try:
+            last_updated = datetime.strptime(last_updated_str, "%Y-%m-%d")
+            delta = datetime.now() - last_updated
+            if delta.days >= 30:
+                should_update = True
+        except ValueError:
+            should_update = True
+
+    # キャッシュファイル自体が存在しない場合も更新
+    if not os.path.exists(MASTER_FILE):
+        should_update = True
+
+    # 同期完了コールバック
+    def on_sync_complete():
+        cfg = load_user_config()
+        cfg["master_last_updated"] = datetime.now().strftime("%Y-%m-%d")
+        save_user_config(cfg)
+
+    # 2. 条件を満たす場合のみ、バックグラウンドタスクで最新のデータをスクレイピング・更新開始
+    if should_update and background_tasks:
+        background_tasks.add_task(update_master_tickers_in_background, on_sync_complete)
 
     return tickers
+
+
+@app.post("/api/tickers/update")
+async def force_update_tickers(background_tasks: BackgroundTasks):
+    # 手動更新なので強制的にバックグラウンド同期を実行
+    def on_sync_complete():
+        cfg = load_user_config()
+        cfg["master_last_updated"] = datetime.now().strftime("%Y-%m-%d")
+        save_user_config(cfg)
+
+    background_tasks.add_task(update_master_tickers_in_background, on_sync_complete)
+    return {"status": "started"}
 
 
 @app.get("/api/tickers/status")
 async def get_tickers_status():
     # 同期ステータスを返す
-    return {"status": update_status}
+    return {"status": get_update_status()}
 
 
 @app.get("/api/config")
@@ -180,7 +239,8 @@ def run_fetch_task(
 
     # 日本株のキャッシュから銘柄名マップを作成
     cached_tickers = load_cached_tickers()
-    company_name_map = {item["ticker"]: item["name"] for item in cached_tickers}
+    tickers_list = cached_tickers.get("japan", [])
+    company_name_map = {item["ticker"]: item["name"] for item in tickers_list}
 
     def progress_cb(current: int, total: int, msg: str):
         progress_state.current = current
@@ -247,17 +307,6 @@ async def get_progress():
     }
 
 
-@app.get("/api/download")
-async def download_file():
-    if not progress_state.output_file or not os.path.exists(progress_state.output_file):
-        raise HTTPException(status_code=404, detail="出力ファイルが見つかりません。")
-    return FileResponse(
-        progress_state.output_file,
-        media_type="text/csv",
-        filename=os.path.basename(progress_state.output_file),
-    )
-
-
 # index.html の配信
 @app.get("/", response_class=HTMLResponse)
 async def get_index():
@@ -284,6 +333,8 @@ def run_uvicorn(port: int):
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
 
 
+window = None
+
 if __name__ == "__main__":
     port = find_free_port()
     # FastAPIサーバーをバックグラウンドスレッドで開始
@@ -291,7 +342,7 @@ if __name__ == "__main__":
     server_thread.start()
 
     # pywebview 起動
-    webview.create_window(
+    window = webview.create_window(
         "Stock Fetcher - 長期投資銘柄情報自動取得ツール (日本株専用)",
         f"http://127.0.0.1:{port}",
         width=1150,

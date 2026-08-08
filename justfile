@@ -23,3 +23,7 @@ build:
 # ビルド成果物やキャッシュのクリーンアップ
 clean:
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue build, dist, *.spec
+
+# 銘柄マスターデータをJPXから取得して手動更新する
+update-master:
+    uv run python -m app.updater
