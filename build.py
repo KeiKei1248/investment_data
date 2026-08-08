@@ -41,17 +41,17 @@ def build():
     ]
 
     print("==========================================")
-    print("PyInstaller による Stock Fetcher のビルドを開始します...")
-    print(f"ビルドオプション: {opts}")
+    print("Starting PyInstaller build for Stock Fetcher...")
+    print(f"Build options: {opts}")
     print("==========================================")
 
     try:
         PyInstaller.__main__.run(opts)
         print(
-            "[SUCCESS] ビルドが正常に完了しました。dist/ ディレクトリを確認してください。"
+            "[SUCCESS] Build completed successfully. Check the dist/ directory."
         )
     except Exception as e:
-        print(f"[ERROR] ビルド中にエラーが発生しました: {e}")
+        print(f"[ERROR] Build failed: {e}")
         sys.exit(1)
 
 
